@@ -4,106 +4,146 @@
 #include <linux/fs.h>
 #include <linux/gpio/consumer.h>
 #include <linux/uaccess.h>
+#include <linux/mod_devicetable.h>
+#include <linux/property.h>
+#include <linux/platform_device.h>
+#include <linux/of_device.h>
+#include <linux/proc_fs.h>
 
-#define DEVICE_NAME "gdev"
-#define GPIO_PIN 18
-
-static int major;
-static struct gpio_desc *gpio;
-
-static int device_open(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static int device_release(struct inode *inode, struct file *file)
-{
-    return 0;
-}
-
-static ssize_t device_read(struct file *filp, char *buffer, size_t length, loff_t *offset)
-{
-    char msg[2];
-    int msg_len;
-
-    int gpio_state = gpiod_get_value(gpio);
-    msg[0] = gpio_state ? '1' : '0';
-    msg[1] = '\n';
-    msg_len = 2;
-
-    if (*offset >= msg_len)
-        return 0;
-
-    if (copy_to_user(buffer, msg, msg_len))
-        return -EFAULT;
-
-    *offset += msg_len;
-
-    return msg_len;
-}
-
-static ssize_t device_write(struct file *filp, const char *buffer, size_t length, loff_t *offset)
-{
-    char msg[1];
-
-    if (copy_from_user(msg, buffer, 1))
-        return -EFAULT;
-
-    if (msg[0] == '1')
-        gpiod_set_value(gpio, 1);
-    else if (msg[0] == '0')
-        gpiod_set_value(gpio, 0);
-    else
-        return -EINVAL;
-
-    return length;
-}
-
-static struct file_operations fops = {
-    .read = device_read,
-    .write = device_write,
-    .open = device_open,
-    .release = device_release
-};
-
-static int __init gpio_module_init(void)
-{
-    int result;
-
-    gpio = gpiod_get(NULL, "gpio_device", 0);
-    if (IS_ERR(gpio)) {
-        printk(KERN_INFO "Failed to get GPIO descriptor\n");
-        return PTR_ERR(gpio);
-    }
-
-    result = gpiod_direction_output(gpio, 0);
-    if (result) {
-        printk(KERN_INFO "Failed to set GPIO direction\n");
-        gpiod_put(gpio);
-        return result;
-    }
-
-    major = register_chrdev(0, DEVICE_NAME, &fops);
-    if (major < 0) {
-        gpiod_put(gpio);
-        printk(KERN_ALERT "Registering char device failed with %d\n", major);
-        return major;
-    }
-    printk(KERN_INFO "GPIO module loaded with device major number %d\n", major);
-    return 0;
-}
-
-static void __exit gpio_module_exit(void)
-{
-    unregister_chrdev(major, DEVICE_NAME);
-    gpiod_put(gpio);
-    printk(KERN_INFO "GPIO module unloaded\n");
-}
-
-module_init(gpio_module_init);
-module_exit(gpio_module_exit);
-
+#define DEVICE_NAME "gpdev"
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("F Z");
 MODULE_DESCRIPTION("A simple GPIO Linux char driver for Raspberry Pi using gpiod");
 MODULE_VERSION("0.1");
+
+/* Declate the probe and remove functions */
+static int dt_probe(struct platform_device *pdev);
+static int dt_remove(struct platform_device *pdev);
+
+static struct of_device_id my_driver_ids[] = {
+	{
+		.compatible = "brightlight,gpdev",
+	}, { /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, my_driver_ids);
+
+static struct platform_driver my_driver = {
+	.probe = dt_probe,
+	.remove = dt_remove,
+	.driver = {
+		.name = "m_gpdev_driver",
+		.of_match_table = my_driver_ids,
+	},
+};
+
+/* GPIO variable */
+static struct gpio_desc *my_led = NULL;
+static struct proc_dir_entry *proc_file;
+
+/**
+ * @brief Write data to buffer
+ */
+static ssize_t my_write(struct file *File, const char *user_buffer, size_t count, loff_t *offs) {
+	switch (user_buffer[0]) {
+		case '0':
+		case '1':
+			gpiod_set_value(my_led, user_buffer[0] - '0');
+		default:
+			break;
+	}
+	return count;
+}
+
+static struct proc_ops fops = {
+	.proc_write = my_write,
+};
+
+/**
+ * @brief This function is called on loading the driver 
+ */
+static int dt_probe(struct platform_device *pdev) {
+	struct device *dev = &pdev->dev;
+	const char *label;
+	int my_value, ret;
+
+	printk("dt_gpio - now in the probe function!\n");
+
+	/* Check for device properties */
+	if(!device_property_present(dev, "label")) {
+		printk("dt_gpio - Error! Device property 'label' not found!\n");
+		return -1;
+	}
+	if(!device_property_present(dev, "my_value")) {
+		printk("dt_gpio - Error! Device property 'my_value' not found!\n");
+		return -1;
+	}
+	if(!device_property_present(dev, "green-led-gpio")) {
+		printk("dt_gpio - Error! Device property 'green-led-gpio' not found!\n");
+		return -1;
+	}
+
+	/* Read device properties */
+	ret = device_property_read_string(dev, "label", &label);
+	if(ret) {
+		printk("dt_gpio - Error! Could not read 'label'\n");
+		return -1;
+	}
+	printk("dt_gpio - label: %s\n", label);
+	ret = device_property_read_u32(dev, "my_value", &my_value);
+	if(ret) {
+		printk("dt_gpio - Error! Could not read 'my_value'\n");
+		return -1;
+	}
+	printk("dt_gpio - my_value: %d\n", my_value);
+
+	/* Init GPIO */
+	my_led = gpiod_get(dev, "green-led", GPIOD_OUT_LOW);
+	if(IS_ERR(my_led)) {
+		printk("dt_gpio - Error! Could not setup the GPIO\n");
+		return -1 * IS_ERR(my_led);
+	}
+
+	/* Creating procfs file */
+	proc_file = proc_create("gled", 0666, NULL, &fops);
+	if(proc_file == NULL) {
+		printk("procfs_test - Error creating /proc/gled\n");
+		gpiod_put(my_led);
+		return -ENOMEM;
+	}
+
+
+	return 0;
+}
+
+/**
+ * @brief This function is called on unloading the driver 
+ */
+static int dt_remove(struct platform_device *pdev) {
+	printk("dt_gpio - Now I am in the remove function\n");
+	gpiod_put(my_led);
+	proc_remove(proc_file);
+	return 0;
+}
+
+/**
+ * @brief This function is called, when the module is loaded into the kernel
+ */
+static int __init my_init(void) {
+	printk("dt_gpio - Loading the driver...\n");
+	if(platform_driver_register(&my_driver)) {
+		printk("dt_gpio - Error! Could not load driver\n");
+		return -1;
+	}
+	return 0;
+}
+
+/**
+ * @brief This function is called, when the module is removed from the kernel
+ */
+static void __exit my_exit(void) {
+	printk("dt_gpio - Unload driver");
+	platform_driver_unregister(&my_driver);
+}
+
+module_init(my_init);
+module_exit(my_exit);
