@@ -20,6 +20,11 @@ MODULE_VERSION("0.1");
 static int dt_probe(struct platform_device *pdev);
 static int dt_remove(struct platform_device *pdev);
 
+static ssize_t device_write(struct file *filp, const char *buffer, size_t length, loff_t *offset);
+static ssize_t device_read(struct file *filp, char *buffer, size_t length, loff_t *offset);
+static int device_release(struct inode *inode, struct file *file);
+static int device_open(struct inode *inode, struct file *file);
+
 static struct of_device_id my_driver_ids[] = {
 	{
 		.compatible = "brightlight,gpdev",
@@ -40,22 +45,116 @@ static struct platform_driver my_driver = {
 static struct gpio_desc *my_led = NULL;
 static struct proc_dir_entry *proc_file;
 
+static int major;
+
 /**
- * @brief Write data to buffer
+ * @brief File operations for the GPIO char device.
+ *
+ * This structure defines the file operations for the GPIO char device.
+ * It specifies the functions to be called when the device is opened,
+ * read from, written to, and closed.
  */
-static ssize_t my_write(struct file *File, const char *user_buffer, size_t count, loff_t *offs) {
-	switch (user_buffer[0]) {
-		case '0':
-		case '1':
-			gpiod_set_value(my_led, user_buffer[0] - '0');
-		default:
-			break;
-	}
-	return count;
+static struct file_operations fops = {
+    .read = device_read,    /**< Function to read from the device */
+    .write = device_write,  /**< Function to write to the device */
+    .open = device_open,    /**< Function to open the device */
+    .release = device_release /**< Function to release (close) the device */
+};
+
+/**
+ * @brief Opens the GPIO device.
+ *
+ * This function is called when the device is opened.
+ * It currently does nothing but return 0.
+ *
+ * @param inode Pointer to the inode structure.
+ * @param file Pointer to the file structure.
+ * @return Always returns 0.
+ */
+static int device_open(struct inode *inode, struct file *file)
+{
+    return 0;
+}
+
+/**
+ * @brief Releases (closes) the GPIO device.
+ *
+ * This function is called when the device is closed.
+ * It currently does nothing but return 0.
+ *
+ * @param inode Pointer to the inode structure.
+ * @param file Pointer to the file structure.
+ * @return Always returns 0.
+ */
+static int device_release(struct inode *inode, struct file *file)
+{
+    return 0;
+}
+
+/**
+ * @brief Reads the state of the GPIO pin.
+ *
+ * This function is called when the device is read from.
+ * It reads the state of the GPIO pin and returns it to the user.
+ *
+ * @param filp Pointer to the file structure.
+ * @param buffer Pointer to the user buffer where the data will be copied.
+ * @param length Length of the buffer.
+ * @param offset Offset in the file (unused).
+ * @return Number of bytes read on success, or negative error code on failure.
+ */
+static ssize_t device_read(struct file *filp, char *buffer, size_t length, loff_t *offset)
+{
+    char msg[2];
+    int msg_len;
+
+    int gpio_state = gpiod_get_value(my_led);
+    msg[0] = gpio_state ? '1' : '0';
+    msg[1] = '\n';
+    msg_len = 2;
+
+    if (*offset >= msg_len)
+        return 0;
+
+    if (copy_to_user(buffer, msg, msg_len))
+        return -EFAULT;
+
+    *offset += msg_len;
+
+    return msg_len;
+}
+
+/**
+ * @brief Writes to the GPIO device.
+ *
+ * This function is called when the device is written to.
+ * It sets the state of the GPIO pin based on the user input.
+ *
+ * @param filp Pointer to the file structure.
+ * @param buffer Pointer to the user buffer containing the data.
+ * @param length Length of the buffer.
+ * @param offset Offset in the file (unused).
+ * @return Number of bytes written on success, or negative error code on failure.
+ */
+static ssize_t device_write(struct file *filp, const char *buffer, size_t length, loff_t *offset)
+{
+    char msg[1];
+
+    if (copy_from_user(msg, buffer, 1))
+        return -EFAULT;
+
+    if (msg[0] == '1')
+        gpiod_set_value(my_led, 1);
+    else if (msg[0] == '0')
+        gpiod_set_value(my_led, 0);
+    else
+        return -EINVAL;
+
+    return length;
 }
 
 static struct proc_ops fops = {
-	.proc_write = my_write,
+	.proc_write = device_write,
 };
 
 /**
@@ -110,7 +209,8 @@ static int dt_probe(struct platform_device *pdev) {
 		gpiod_put(my_led);
 		return -ENOMEM;
 	}
-
+	
+	
 
 	return 0;
 }
@@ -134,6 +234,13 @@ static int __init my_init(void) {
 		printk("dt_gpio - Error! Could not load driver\n");
 		return -1;
 	}
+	
+	major = register_chrdev(0, DEVICE_NAME, &fops);
+    if (major < 0) {
+        printk(KERN_ALERT "Registering char device failed with %d\n", major);
+        return major;
+    }
+	
 	return 0;
 }
 
