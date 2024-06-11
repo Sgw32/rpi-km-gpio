@@ -54,7 +54,7 @@ static int major;
  * It specifies the functions to be called when the device is opened,
  * read from, written to, and closed.
  */
-static struct file_operations fops = {
+static struct file_operations dev_fops = {
     .read = device_read,    /**< Function to read from the device */
     .write = device_write,  /**< Function to write to the device */
     .open = device_open,    /**< Function to open the device */
@@ -235,7 +235,7 @@ static int __init my_init(void) {
 		return -1;
 	}
 	
-	major = register_chrdev(0, DEVICE_NAME, &fops);
+	major = register_chrdev(0, DEVICE_NAME, &dev_fops);
     if (major < 0) {
         printk(KERN_ALERT "Registering char device failed with %d\n", major);
         return major;
