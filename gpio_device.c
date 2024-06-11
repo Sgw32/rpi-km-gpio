@@ -2,14 +2,14 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/fs.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/uaccess.h>
 
 #define DEVICE_NAME "gdev"
 #define GPIO_PIN 18
 
 static int major;
-static int gpio_state = 0;
+static struct gpio_desc *gpio;
 
 static int device_open(struct inode *inode, struct file *file)
 {
@@ -26,7 +26,7 @@ static ssize_t device_read(struct file *filp, char *buffer, size_t length, loff_
     char msg[2];
     int msg_len;
 
-    gpio_state = gpio_get_value(GPIO_PIN);
+    int gpio_state = gpiod_get_value(gpio);
     msg[0] = gpio_state ? '1' : '0';
     msg[1] = '\n';
     msg_len = 2;
@@ -50,9 +50,9 @@ static ssize_t device_write(struct file *filp, const char *buffer, size_t length
         return -EFAULT;
 
     if (msg[0] == '1')
-        gpio_set_value(GPIO_PIN, 1);
+        gpiod_set_value(gpio, 1);
     else if (msg[0] == '0')
-        gpio_set_value(GPIO_PIN, 0);
+        gpiod_set_value(gpio, 0);
     else
         return -EINVAL;
 
@@ -70,28 +70,25 @@ static int __init gpio_module_init(void)
 {
     int result;
 
-    if (!gpio_is_valid(GPIO_PIN)) {
-        printk(KERN_INFO "Invalid GPIO %d\n", GPIO_PIN);
-        return -ENODEV;
+    gpio = gpiod_get(NULL, "gpio_device", 0);
+    if (IS_ERR(gpio)) {
+        printk(KERN_INFO "Failed to get GPIO descriptor\n");
+        return PTR_ERR(gpio);
     }
 
-    result = gpio_request(GPIO_PIN, "sysfs");
+    result = gpiod_direction_output(gpio, 0);
     if (result) {
-        printk(KERN_INFO "gpio request failed\n");
+        printk(KERN_INFO "Failed to set GPIO direction\n");
+        gpiod_put(gpio);
         return result;
     }
 
-    gpio_direction_output(GPIO_PIN, gpio_state);
-    gpio_export(GPIO_PIN, false);
-
     major = register_chrdev(0, DEVICE_NAME, &fops);
     if (major < 0) {
-        gpio_unexport(GPIO_PIN);
-        gpio_free(GPIO_PIN);
+        gpiod_put(gpio);
         printk(KERN_ALERT "Registering char device failed with %d\n", major);
         return major;
     }
-
     printk(KERN_INFO "GPIO module loaded with device major number %d\n", major);
     return 0;
 }
@@ -99,8 +96,7 @@ static int __init gpio_module_init(void)
 static void __exit gpio_module_exit(void)
 {
     unregister_chrdev(major, DEVICE_NAME);
-    gpio_unexport(GPIO_PIN);
-    gpio_free(GPIO_PIN);
+    gpiod_put(gpio);
     printk(KERN_INFO "GPIO module unloaded\n");
 }
 
@@ -109,5 +105,5 @@ module_exit(gpio_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("F Z");
-MODULE_DESCRIPTION("A simple GPIO Linux char driver for Raspberry Pi");
+MODULE_DESCRIPTION("A simple GPIO Linux char driver for Raspberry Pi using gpiod");
 MODULE_VERSION("0.1");
