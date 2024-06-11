@@ -9,6 +9,12 @@
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
 #include <linux/proc_fs.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/uaccess.h>
+#include <linux/kdev_t.h> // MKDEV
+#include <linux/types.h> // dev_t
 
 #define DEVICE_NAME "gpdev"
 MODULE_LICENSE("GPL");
@@ -30,6 +36,9 @@ static struct of_device_id my_driver_ids[] = {
 		.compatible = "brightlight,gpdev",
 	}, { /* sentinel */ }
 };
+
+static dev_t DEV_T;
+static struct class *device_class = NULL;
 MODULE_DEVICE_TABLE(of, my_driver_ids);
 
 static struct platform_driver my_driver = {
@@ -45,6 +54,7 @@ static struct platform_driver my_driver = {
 static struct gpio_desc *my_led = NULL;
 static struct proc_dir_entry *proc_file;
 
+static int minor;
 static int major;
 
 /**
@@ -229,6 +239,7 @@ static int dt_remove(struct platform_device *pdev) {
  * @brief This function is called, when the module is loaded into the kernel
  */
 static int __init my_init(void) {
+    void *ptr_error;
 	printk("dt_gpio - Loading the driver...\n");
 	if(platform_driver_register(&my_driver)) {
 		printk("dt_gpio - Error! Could not load driver\n");
@@ -240,8 +251,30 @@ static int __init my_init(void) {
         printk(KERN_ALERT "Registering char device failed with %d\n", major);
         return major;
     }
-	printk(KERN_INFO "GPIO module loaded with device major number %d\n", major);
-	return 0;
+
+    DEV_T = MKDEV(major, minor);
+
+    /* class_create */
+    device_class = class_create(DEVICE_NAME);
+    if (IS_ERR(device_class))
+    {
+    unregister_chrdev(major, DEVICE_NAME);
+    printk(KERN_INFO "Class creation failed\n");
+    return PTR_ERR(device_class);
+    }
+
+    /* device_create */
+    ptr_error = device_create(device_class, NULL, DEV_T, NULL, DEVICE_NAME);
+    if (IS_ERR(ptr_error))
+    {
+    class_destroy(device_class);
+    unregister_chrdev(major, DEVICE_NAME);
+    printk(KERN_INFO "Device creation failed\n");
+    return PTR_ERR(ptr_error);
+    }
+
+    printk(KERN_INFO "GPIO module loaded with device major number %d\n", major);
+    return 0;
 }
 
 /**
@@ -250,6 +283,8 @@ static int __init my_init(void) {
 static void __exit my_exit(void) {
 	printk("dt_gpio - Unload driver");
 	platform_driver_unregister(&my_driver);
+device_destroy(device_class, DEV_T);
+    class_destroy(device_class);
 	unregister_chrdev(major, DEVICE_NAME);
 }
 
