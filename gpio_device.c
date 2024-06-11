@@ -107,8 +107,11 @@ static ssize_t device_read(struct file *filp, char *buffer, size_t length, loff_
 {
     char msg[2];
     int msg_len;
-
-    int gpio_state = gpiod_get_value(my_led);
+	int gpio_state = 0;
+	if (my_led)
+	{
+		gpio_state = gpiod_get_value(my_led);
+	}
     msg[0] = gpio_state ? '1' : '0';
     msg[1] = '\n';
     msg_len = 2;
@@ -209,9 +212,6 @@ static int dt_probe(struct platform_device *pdev) {
 		gpiod_put(my_led);
 		return -ENOMEM;
 	}
-	
-	
-
 	return 0;
 }
 
@@ -240,7 +240,7 @@ static int __init my_init(void) {
         printk(KERN_ALERT "Registering char device failed with %d\n", major);
         return major;
     }
-	
+	printk(KERN_INFO "GPIO module loaded with device major number %d\n", major);
 	return 0;
 }
 
@@ -250,6 +250,7 @@ static int __init my_init(void) {
 static void __exit my_exit(void) {
 	printk("dt_gpio - Unload driver");
 	platform_driver_unregister(&my_driver);
+	unregister_chrdev(major, DEVICE_NAME);
 }
 
 module_init(my_init);
